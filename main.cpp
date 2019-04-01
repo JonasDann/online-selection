@@ -169,49 +169,69 @@ private:
     }
 };
 
-// TODO parallelize
 int main() {
+    auto p = 4;
     auto b = 10;
     auto k = 60;
-    auto N_pow = 5;
-    auto N = ((int) (pow(10, N_pow) / (b * k)) + 1) * b * k;
-    Buffers<int> buffers(b, k);
+    auto N_pow = 7;
+    auto N_p = ((int) (pow(10, N_pow) / (p * b * k)) + 1) * b * k;
+    auto N = N_p * p;
+    std::vector<Buffers<int>> buffers(p, Buffers<int>(b, k));
     std::random_device rd;
     std::mt19937 rng(rd());
-    std::uniform_int_distribution<int> uni;
+    std::uniform_int_distribution<int> uni; // TODO different distributions
 
     std::vector<int> sequence;
 
-    for (int i = 0; i < N; i++) {
-        auto element = uni(rng);
-        auto has_capacity = buffers.Put(element);
-        sequence.emplace_back(element);
-        if (!has_capacity) {
-            std::vector<int> discarded_elements;
-            std::vector<int> splitters;
-            buffers.Collapse(discarded_elements, splitters);
+    // stream data into buffers
+    for (int i = 0; i < N_p; i++) {
+        for (int j = 0; j < p; j++) {
+            auto element = uni(rng);
+            auto has_capacity = buffers[j].Put(element);
+            sequence.emplace_back(element);
+            if (!has_capacity) {
+                std::vector<int> discarded_elements;
+                std::vector<int> splitters;
+                buffers[j].Collapse(discarded_elements, splitters);
+            }
         }
     }
-    bool collapsible;
-    std::vector<int> splitters;
-    do {
-        std::vector<int> discarded_elements;
-        splitters.clear();
-        collapsible = buffers.Collapse(discarded_elements, splitters);
-    } while(collapsible);
 
+    // collapse until splitters
+    bool collapsible;
+    std::vector<std::vector<int>> splitters(p, std::vector<int>());
+    for (int j = 0; j < p; j++) {
+        do {
+            std::vector<int> discarded_elements;
+            splitters[j].clear();
+            collapsible = buffers[j].Collapse(discarded_elements, splitters[j]);
+        } while (collapsible);
+    }
+
+    // merge parallel splitters
+    Buffers<int> result_buffers(p, k);
+    for (int j = 0; j < p; j++) {
+        for (int i = 0; i < k; i++) {
+            result_buffers.Put(splitters[j][i]);
+        }
+    }
+    std::vector<int> discarded_elements;
+    std::vector<int> result_splitters;
+    result_buffers.Collapse(discarded_elements, result_splitters);
+
+    // calculate error
     std::sort(sequence.begin(), sequence.end());
     float error = 0;
     for (int j = 0; j < k; j++) {
         int target_rank = (N / k) * (j + 1);
         int actual_rank = 0;
-        while (sequence[actual_rank] < splitters[j]) {
+        while (sequence[actual_rank] < result_splitters[j]) {
             actual_rank++;
         }
         error += pow(target_rank - actual_rank, 2);
     }
     error = std::sqrt(error / (k - 1)) / N;
-    std::cout << "N: " << N << ", b: " << b << ", k: " << k << " - " << error << "\n";
+    std::cout << "p: " << p << ", N: " << N << ", b: " << b << ", k: " << k << " | " << error << "\n";
 
     return 0;
 }
