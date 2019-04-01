@@ -82,21 +82,21 @@ public:
         size_t total_index = 0;
         std::vector<size_t> positions(working_buffers.size(), 0);
         for (int j = 0; j < k_; j++) {
-            size_t target_rank;
-            if (target_buffer.weight % 2 == 0) { // even
-                target_rank = j * target_buffer.weight + (target_buffer.weight + 2 * (j % 2)) / 2;
-            } else { // uneven
-                target_rank = j * target_buffer.weight + (target_buffer.weight + 1) / 2;
-            }
+            size_t target_rank = GetTargetRank(j, target_buffer.weight);
             // TODO switch to tournament tree
             while (total_index < target_rank) {
-                ValueType minimum = working_buffers[0]->buffer[positions[0]];
                 size_t minimum_index = 0;
-                for (int i = 1; i < working_buffers.size(); i++) {
-                    ValueType value = working_buffers[i]->buffer[positions[i]];
-                    if (value < minimum) {
-                        minimum = value;
-                        minimum_index = i;
+                while (positions[minimum_index] >= working_buffers[minimum_index]->buffer.size()) { // empty buffers
+                    minimum_index++;
+                }
+                ValueType minimum = working_buffers[minimum_index]->buffer[positions[minimum_index]];
+                for (int i = minimum_index + 1; i < working_buffers.size(); i++) {
+                    if (positions[i] < working_buffers[i]->buffer.size()) { // not empty
+                        ValueType value = working_buffers[i]->buffer[positions[i]];
+                        if (value < minimum) {
+                            minimum = value;
+                            minimum_index = i;
+                        }
                     }
                 }
                 total_index += working_buffers[minimum_index]->weight;
@@ -141,18 +141,33 @@ private:
             }
         }
     }
+
+    size_t GetTargetRank(size_t j, size_t weight) {
+        if (weight % 2 == 0) { // even
+            return j * weight + (weight + 2 * (j % 2)) / 2;
+        } else { // uneven
+            return j * weight + (weight + 1) / 2;
+        }
+    }
+
 };
 
 int main() {
     auto b = 5;
-    auto k = 100;
+    auto k = 2778;
+    auto N_pow = 5;
+    auto N = ((int) (pow(10, N_pow) / (b * k)) + 1) * b * k;
     Buffers<int> buffers(b, k);
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> uni;
 
-    for (int i = 0; i < 10 * b * k; i++) {
-        auto has_capacity = buffers.Put(uni(rng));
+    std::vector<int> sequence;
+
+    for (int i = 0; i < N; i++) {
+        auto element = uni(rng);
+        auto has_capacity = buffers.Put(element);
+        sequence.emplace_back(element);
         if (!has_capacity) {
             std::vector<int> discarded_elements;
             std::vector<int> splitters;
@@ -160,11 +175,25 @@ int main() {
         }
     }
     bool collapsible;
+    std::vector<int> splitters;
     do {
         std::vector<int> discarded_elements;
-        std::vector<int> splitters;
+        splitters.clear();
         collapsible = buffers.Collapse(discarded_elements, splitters);
     } while(collapsible);
+
+    std::sort(sequence.begin(), sequence.end());
+    float error = 0;
+    for (int j = 0; j < k; j++) {
+        int target_rank = (N / k) * (j + 1);
+        int actual_rank = 0;
+        while (sequence[actual_rank] < splitters[j]) {
+            actual_rank++;
+        }
+        error += pow(target_rank - actual_rank, 2);
+    }
+    error = sqrt(error / (k - 1)) / N;
+    std::cout << "N: " << N << ", b: " << b << ", k: " << k << " - " << error << "\n";
 
     return 0;
 }
