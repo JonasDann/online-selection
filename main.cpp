@@ -101,7 +101,7 @@ public:
                 positions[minimum_index]++;
                 out_elements.emplace_back(minimum);
             }
-            auto splitter = out_elements.back();
+            auto splitter = out_elements.back(); // TODO return highest weighted buffer
             splitters.emplace_back(splitter);
             out_elements.pop_back();
             target_buffer->Put(splitter);
@@ -170,53 +170,55 @@ private:
 };
 
 int main() {
+    using ValueType = double;
     auto p = 4;
     auto b = 10;
     auto k = 60;
     auto N_pow = 7;
     auto N_p = ((int) (pow(10, N_pow) / (p * b * k)) + 1) * b * k;
     auto N = N_p * p;
-    std::vector<Buffers<int>> buffers(p, Buffers<int>(b, k));
+    std::vector<Buffers<ValueType>> buffers(p, Buffers<ValueType>(b, k));
     std::random_device rd;
     std::mt19937 rng(rd());
-    std::uniform_int_distribution<int> uni; // TODO different distributions
+    std::uniform_int_distribution<int> uni;
+    std::lognormal_distribution<double> log_norm(0.0, 1.0);
 
-    std::vector<int> sequence;
+    std::vector<ValueType> sequence;
 
     // stream data into buffers
     for (int i = 0; i < N_p; i++) {
         for (int j = 0; j < p; j++) {
-            auto element = uni(rng);
+            auto element = log_norm(rng);
             auto has_capacity = buffers[j].Put(element);
             sequence.emplace_back(element);
             if (!has_capacity) {
-                std::vector<int> discarded_elements;
-                std::vector<int> splitters;
-                buffers[j].Collapse(discarded_elements, splitters);
+                std::vector<ValueType> discarded_elements;
+                std::vector<ValueType> splitters;
+                buffers[j].Collapse(discarded_elements, splitters); // TODO test convergence
             }
         }
     }
 
     // collapse until splitters
     bool collapsible;
-    std::vector<std::vector<int>> splitters(p, std::vector<int>());
+    std::vector<std::vector<ValueType>> splitters(p, std::vector<ValueType>());
     for (int j = 0; j < p; j++) {
         do {
-            std::vector<int> discarded_elements;
+            std::vector<ValueType> discarded_elements;
             splitters[j].clear();
             collapsible = buffers[j].Collapse(discarded_elements, splitters[j]);
         } while (collapsible);
     }
 
     // merge parallel splitters
-    Buffers<int> result_buffers(p, k);
+    Buffers<ValueType> result_buffers(p, k);
     for (int j = 0; j < p; j++) {
         for (int i = 0; i < k; i++) {
             result_buffers.Put(splitters[j][i]);
         }
     }
-    std::vector<int> discarded_elements;
-    std::vector<int> result_splitters;
+    std::vector<ValueType> discarded_elements;
+    std::vector<ValueType> result_splitters;
     result_buffers.Collapse(discarded_elements, result_splitters);
 
     // calculate error
