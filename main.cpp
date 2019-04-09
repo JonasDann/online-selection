@@ -178,27 +178,38 @@ private:
     }
 };
 
-int main() {
-    using ValueType = double;
-    auto p = 4;
-    auto b = 10;
-    auto k = 60;
-    auto N_pow = 7;
+template <typename ValueType>
+double calculate_error(std::vector<ValueType> sequence, std::vector<ValueType>& samples) {
+    size_t N = sequence.size();
+    size_t k = samples.size();
+    std::sort(sequence.begin(), sequence.end());
+
+    float error = 0;
+    for (int j = 0; j < k; j++) {
+        int target_rank = (N / k) * (j + 1);
+        int actual_rank = 0;
+        while (sequence[actual_rank] < samples[j]) {
+            actual_rank++;
+        }
+        error += pow(target_rank - actual_rank, 2);
+    }
+    return std::sqrt(error / (k - 1)) / N;
+}
+
+template <typename ValueType, typename Distribution>
+void online_selection(size_t p, size_t b, size_t k, size_t N_pow, Distribution distribution, bool sorted) { // TODO try sorted
     auto N_p = ((int) (pow(10, N_pow) / (p * b * k)) + 1) * b * k;
     auto N = N_p * p;
     std::vector<Buffers<ValueType>> buffers(p, Buffers<ValueType>(b, k));
     std::random_device rd;
     std::mt19937 rng(rd());
-    std::uniform_int_distribution<int> uni;
-    std::lognormal_distribution<double> log_norm(0.0, 1.0); // TODO higher peak
-    // TODO try sorted
 
     std::vector<ValueType> sequence;
 
     // stream data into buffers
     for (int i = 0; i < N_p; i++) {
         for (int j = 0; j < p; j++) {
-            auto element = log_norm(rng);
+            auto element = distribution(rng);
             auto has_capacity = buffers[j].Put(element);
             sequence.emplace_back(element);
             if (!has_capacity) {
@@ -226,24 +237,22 @@ int main() {
             result_buffers.Put(samples[i]);
         }
     }
-    std::vector<ValueType> discarded_elements;
     std::vector<ValueType> result_samples;
-    result_buffers.Collapse(discarded_elements);
+    if (p > 1) {
+        std::vector<ValueType> discarded_elements;
+        result_buffers.Collapse(discarded_elements);
+    }
     result_buffers.GetSamples(result_samples);
 
-    // calculate error
-    std::sort(sequence.begin(), sequence.end());
-    float error = 0;
-    for (int j = 0; j < k; j++) {
-        int target_rank = (N / k) * (j + 1);
-        int actual_rank = 0;
-        while (sequence[actual_rank] < result_samples[j]) {
-            actual_rank++;
-        }
-        error += pow(target_rank - actual_rank, 2);
-    }
-    error = std::sqrt(error / (k - 1)) / N;
-    std::cout << "p: " << p << ", N: " << N << ", b: " << b << ", k: " << k << " | " << error << "\n";
+    auto error = calculate_error<ValueType>(sequence, result_samples);
+    std::cout << "p: " << p << ", b: " << b << ", k: " << k << ", N: " << N << ", sorted: " << sorted << " | " << error << "\n";
+}
+
+int main() {
+    std::uniform_int_distribution<int> uni;
+    std::lognormal_distribution<double> log_norm(0.0, 1.0); // TODO higher peak
+
+    online_selection<double, std::lognormal_distribution<double>>(4, 10, 60, 7, log_norm, false);
 
     return 0;
 }
