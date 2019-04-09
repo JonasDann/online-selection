@@ -122,6 +122,7 @@ public:
         return b_ - empty_buffers > 1;
     }
 
+    // TODO pseudo concat to use all knowledge in the buffers
     size_t GetSamples(std::vector<ValueType>& out_samples) {
         Buffer<ValueType> *max_weighted_buffer = &buffer_pool[0];
         for (int i = 1; i < buffer_pool.size(); i++) {
@@ -196,63 +197,98 @@ double calculate_error(std::vector<ValueType> sequence, std::vector<ValueType>& 
     return std::sqrt(error / (k - 1)) / N;
 }
 
+template <typename ValueType>
+void print_convergence(size_t i, std::vector<ValueType>& sequence, size_t& last_sample_weight, size_t sample_weight, std::vector<ValueType>& samples) {
+    if (sample_weight > last_sample_weight) {
+        auto error = calculate_error<ValueType>(sequence, samples);
+        std::cout << "current error(" << i << ", "
+                  << sample_weight << "): " << error << "\n";
+    }
+    last_sample_weight = sample_weight;
+}
+
 template <typename ValueType, typename Distribution>
-void online_selection(size_t p, size_t b, size_t k, size_t N_pow, Distribution distribution, bool sorted) { // TODO try sorted
+void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
+                     Distribution distribution, bool sorted) {
     auto N_p = ((int) (pow(10, N_pow) / (p * b * k)) + 1) * b * k;
     auto N = N_p * p;
+
+    std::cout << "# Online Sampling" << "\n";
+    std::cout << "p: " << p << ", b: " << b << ", k: " << k << ", N: " << N << ", sorted: " << sorted << "\n\n";
+
     std::vector<Buffers<ValueType>> buffers(p, Buffers<ValueType>(b, k));
     std::random_device rd;
     std::mt19937 rng(rd());
 
-    std::vector<ValueType> sequence;
+    std::vector<ValueType> global_sequence;
+    global_sequence.reserve(p * N_p);
+    for (int j = 0; j < p; j++) {
+        // generate input sequence
+        std::vector<ValueType> sequence;
+        sequence.reserve(N_p);
+        for (int i = 0; i < N_p; i++) {
+            sequence.emplace_back(distribution(rng));
+        }
 
-    // stream data into buffers
-    for (int i = 0; i < N_p; i++) {
-        for (int j = 0; j < p; j++) {
-            auto element = distribution(rng);
-            auto has_capacity = buffers[j].Put(element);
-            sequence.emplace_back(element);
+        if (sorted) {
+            std::sort(sequence.begin(), sequence.end());
+        }
+
+        // stream data into buffers
+        size_t last_sample_weight = 0;
+        for (int i = 0; i < N_p; i++) {
+            auto has_capacity = buffers[j].Put(sequence[i]);
             if (!has_capacity) {
                 std::vector<ValueType> discarded_elements;
-                buffers[j].Collapse(discarded_elements); // TODO test convergence
+                buffers[j].Collapse(discarded_elements);
+                if (j == 0) {
+                    std::vector<ValueType> samples;
+                    auto sample_weight = buffers[j].GetSamples(samples);
+                    print_convergence<ValueType>(i, sequence, last_sample_weight, sample_weight, samples);
+                }
             }
         }
-    }
 
-    // collapse until splitters
-    bool collapsible;
-    for (int j = 0; j < p; j++) {
+        // collapse until splitters
+        bool collapsible;
         do {
             std::vector<ValueType> discarded_elements;
             collapsible = buffers[j].Collapse(discarded_elements);
+            if (j == 0) {
+                std::vector<ValueType> samples;
+                auto sample_weight = buffers[j].GetSamples(samples);
+                print_convergence<ValueType>(N_p, sequence, last_sample_weight, sample_weight, samples);
+            }
         } while (collapsible);
+        global_sequence.insert(global_sequence.end(), sequence.begin(), sequence.end());
     }
+    std::cout << "\n";
 
     // merge parallel splitters
-    Buffers<ValueType> result_buffers(p, k);
+    Buffers<ValueType> global_buffers(p, k);
     for (int j = 0; j < p; j++) {
         std::vector<ValueType> samples;
         buffers[j].GetSamples(samples);
         for (int i = 0; i < k; i++) {
-            result_buffers.Put(samples[i]);
+            global_buffers.Put(samples[i]);
         }
     }
-    std::vector<ValueType> result_samples;
+    std::vector<ValueType> global_samples;
     if (p > 1) {
         std::vector<ValueType> discarded_elements;
-        result_buffers.Collapse(discarded_elements);
+        global_buffers.Collapse(discarded_elements);
     }
-    result_buffers.GetSamples(result_samples);
+    global_buffers.GetSamples(global_samples);
 
-    auto error = calculate_error<ValueType>(sequence, result_samples);
-    std::cout << "p: " << p << ", b: " << b << ", k: " << k << ", N: " << N << ", sorted: " << sorted << " | " << error << "\n";
+    auto error = calculate_error<ValueType>(global_sequence, global_samples);
+    std::cout << "final error: " << error << "\n\n";
 }
 
 int main() {
     std::uniform_int_distribution<int> uni;
-    std::lognormal_distribution<double> log_norm(0.0, 1.0); // TODO higher peak
+    std::lognormal_distribution<double> log_norm(0.0, 0.1);
 
-    online_selection<double, std::lognormal_distribution<double>>(4, 10, 60, 7, log_norm, false);
+    online_sampling<double, std::lognormal_distribution<double>>(1, 10, 60, 7, log_norm, true);
 
     return 0;
 }
