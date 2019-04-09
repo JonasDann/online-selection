@@ -12,148 +12,139 @@
 #include <assert.h>
 #include <cmath>
 
-template <typename ValueType>
-class Buffer {
-public:
-    size_t weight;
-    std::vector<ValueType> elements;
-    size_t current_index;
-    bool sorted;
-
-    explicit Buffer(size_t k) {
-        elements = std::vector<ValueType>(k);
-        Reset();
-    }
-
-    bool Put(ValueType value) {
-        assert(HasCapacity());
-        elements[current_index++] = value;
-        return HasCapacity();
-    }
-
-    bool HasCapacity() {
-        return current_index < elements.size();
-    }
-
-    bool IsEmpty() {
-        return current_index == 0;
-    }
-
-    void Reset() {
-        weight = 0;
-        current_index = 0;
-        sorted = false;
-    }
-};
-
 template <
         typename ValueType>
-class Buffers {
+class OnlineSampler {
+    class Buffer {
+    public:
+        size_t weight_;
+        std::vector<ValueType> elements_;
+        bool sorted_;
+
+        explicit Buffer(size_t k) : weight_(0), sorted_(false), k_(k) {
+            elements_.reserve(k);
+        }
+
+        bool Put(ValueType value) {
+            assert(HasCapacity());
+            elements_.emplace_back(value);
+            return HasCapacity();
+        }
+
+        bool HasCapacity() {
+            return elements_.size() < k_;
+        }
+
+        bool IsEmpty() {
+            return elements_.empty();
+        }
+    private:
+        size_t k_;
+    };
+
 public:
-    Buffers(size_t b, size_t k) : b_(b), k_(k), current_buffer(-1), empty_buffers(b),
-            minimum_level(0) {
-        buffer_pool = std::vector<Buffer<ValueType>>(b + 1, Buffer<ValueType>(k));
-        leveled_buffers.emplace_back(std::vector<Buffer<ValueType> *>());
+    OnlineSampler(size_t b, size_t k) : b_(b), k_(k), current_buffer_(-1), empty_buffers_(b),
+            minimum_level_(0) {
+        buffers_ = std::vector<Buffer>(b, Buffer(k));
     }
 
     bool Put(ValueType value) {
-        if (current_buffer == -1 || !GetCurrentBuffer()->HasCapacity()) {
+        if (current_buffer_ == -1 || !buffers_[current_buffer_].HasCapacity()) {
             New();
         }
-        return GetCurrentBuffer()->Put(value) || empty_buffers > 0;
+        return buffers_[current_buffer_].Put(value) || empty_buffers_ > 0;
     }
 
-    bool Collapse(std::vector<ValueType>& out_elements, std::vector<ValueType>& splitters) {
-        auto level = leveled_buffers[minimum_level];
+    // TODO emitter lambda instead of out_elements
+    template <typename Emitter>
+    bool Collapse(const Emitter& emit) {
+        std::vector<Buffer> level;
+        auto level_begin = b_ - level_counters_[minimum_level_];
+        for (size_t i = level_begin; i < b_; i++) {
+            level.emplace_back(std::move(buffers_[i]));
+        }
         size_t weight_sum = 0;
         for (int i = 0; i < level.size(); i++) {
-            auto buffer = level[i];
-            if (!buffer->sorted) {
-                std::sort(buffer->elements.begin(), buffer->elements.end());
-                buffer->sorted = true;
+            if (!level[i].sorted_) {
+                std::sort(level[i].elements_.begin(), level[i].elements_.end());
+                level[i].sorted_ = true;
             }
-            weight_sum += buffer->weight;
+            weight_sum += level[i].weight_;
         }
-        auto target_buffer = &buffer_pool[GetEmptyBufferIndex()];
-        target_buffer->weight = weight_sum;
-        target_buffer->sorted = true;
+        auto target_buffer_index = level_begin;
+        buffers_[target_buffer_index].weight_ = weight_sum;
+        buffers_[target_buffer_index].sorted_ = true;
         size_t total_index = 0;
         std::vector<size_t> positions(level.size(), 0);
         for (int j = 0; j < k_; j++) {
-            size_t target_rank = GetTargetRank(j, target_buffer->weight);
+            size_t target_rank = GetTargetRank(j, buffers_[target_buffer_index].weight_);
             // TODO switch to tournament tree
+            ValueType sample;
+            bool first = true;
             while (total_index < target_rank) {
                 size_t minimum_index = 0;
-                while (positions[minimum_index] >= level[minimum_index]->elements.size()) { // empty buffers
+                while (positions[minimum_index] >= level[minimum_index].elements_.size()) { // empty buffers
                     minimum_index++;
                 }
-                ValueType minimum = level[minimum_index]->elements[positions[minimum_index]];
+                ValueType minimum = level[minimum_index].elements_[positions[minimum_index]];
                 for (int i = minimum_index + 1; i < level.size(); i++) {
-                    if (positions[i] < level[i]->elements.size()) { // not empty
-                        ValueType value = level[i]->elements[positions[i]];
+                    if (positions[i] < level[i].elements_.size()) { // not empty
+                        ValueType value = level[i].elements_[positions[i]];
                         if (value < minimum) {
                             minimum = value;
                             minimum_index = i;
                         }
                     }
                 }
-                total_index += level[minimum_index]->weight;
+                if (first) {
+                    first = false;
+                } else {
+                    emit(sample);
+                }
+                total_index += level[minimum_index].weight_;
                 positions[minimum_index]++;
-                out_elements.emplace_back(minimum);
+                sample = minimum;
             }
-            auto splitter = out_elements.back(); // TODO return highest weighted buffer
-            splitters.emplace_back(splitter);
-            out_elements.pop_back();
-            target_buffer->Put(splitter);
+            buffers_[target_buffer_index].Put(sample);
         }
 
-        for (int i = 0; i < level.size(); i++) {
-            level[i]->Reset();
-        }
-        empty_buffers += level.size() - 1;
-        leveled_buffers[minimum_level].clear();
-        current_buffer = -1;
+        empty_buffers_ += level.size() - 1;
+        level_counters_[minimum_level_] = 0;
+        current_buffer_ = -1;
 
-        minimum_level++;
-        if (minimum_level >= leveled_buffers.size()) {
-            leveled_buffers.emplace_back(std::vector<Buffer<ValueType> *>());
+        minimum_level_++;
+        if (minimum_level_ >= level_counters_.size()) {
+            level_counters_.emplace_back(1);
         }
-        assert(minimum_level < leveled_buffers.size());
-        leveled_buffers[minimum_level].emplace_back(target_buffer);
+        assert(minimum_level_ < level_counters_.size());
 
-        return b_ - empty_buffers > 1;
+        return b_ - empty_buffers_ > 1;
+    }
+
+    size_t GetHighestWeightedSamples(std::vector<ValueType>& out_samples) {
+        out_samples = buffers_[0].elements_;
+        return buffers_[0].weight_;
     }
 
 private:
     size_t b_;
     size_t k_;
 
-    std::vector<Buffer<ValueType>> buffer_pool;
-    using LeveledBuffers = std::vector<std::vector<Buffer<ValueType> *>>;
-    LeveledBuffers leveled_buffers;
-    size_t current_buffer;
-    size_t empty_buffers;
-    size_t minimum_level;
-
-    size_t GetEmptyBufferIndex() {
-        for (int i = 0; i < buffer_pool.size(); i++) {
-            if (buffer_pool[i].IsEmpty()) {
-                return i;
-            }
-        }
-        return -1;
-    }
+    std::vector<Buffer> buffers_;
+    std::vector<size_t> level_counters_;
+    size_t current_buffer_;
+    size_t empty_buffers_;
+    size_t minimum_level_;
 
     void New() {
-        current_buffer = GetEmptyBufferIndex();
-        if (empty_buffers > 1) {
-            leveled_buffers[0].emplace_back(GetCurrentBuffer());
-            minimum_level = 0;
-        } else {
-            leveled_buffers[minimum_level].emplace_back(GetCurrentBuffer());
+        current_buffer_ = std::accumulate(level_counters_.begin(),
+                level_counters_.end(), (size_t) 0);
+        if (empty_buffers_ > 1) {
+            minimum_level_ = 0;
         }
-        GetCurrentBuffer()->weight = 1;
-        empty_buffers--;
+        level_counters_[minimum_level_]++;
+        buffers_[current_buffer_].weight_ = 1;
+        empty_buffers_--;
     }
 
     size_t GetTargetRank(size_t j, size_t weight) {
@@ -162,10 +153,6 @@ private:
         } else { // uneven
             return j * weight + (weight + 1) / 2;
         }
-    }
-
-    Buffer<ValueType> *GetCurrentBuffer() {
-        return &buffer_pool[current_buffer];
     }
 };
 
@@ -177,11 +164,12 @@ int main() {
     auto N_pow = 7;
     auto N_p = ((int) (pow(10, N_pow) / (p * b * k)) + 1) * b * k;
     auto N = N_p * p;
-    std::vector<Buffers<ValueType>> buffers(p, Buffers<ValueType>(b, k));
+    std::vector<OnlineSampler<ValueType>> buffers(p, OnlineSampler<ValueType>(b, k));
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> uni;
-    std::lognormal_distribution<double> log_norm(0.0, 1.0);
+    std::lognormal_distribution<double> log_norm(0.0, 1.0); // TODO higher peak
+    // TODO try sorted
 
     std::vector<ValueType> sequence;
 
@@ -192,34 +180,32 @@ int main() {
             auto has_capacity = buffers[j].Put(element);
             sequence.emplace_back(element);
             if (!has_capacity) {
-                std::vector<ValueType> discarded_elements;
-                std::vector<ValueType> splitters;
-                buffers[j].Collapse(discarded_elements, splitters); // TODO test convergence
+                buffers[j].Collapse([](ValueType element) {}); // TODO test convergence
             }
         }
     }
 
-    // collapse until splitters
+    // collapse until final samples
     bool collapsible;
-    std::vector<std::vector<ValueType>> splitters(p, std::vector<ValueType>());
+    std::vector<std::vector<ValueType>> samples(p, std::vector<ValueType>());
     for (int j = 0; j < p; j++) {
         do {
-            std::vector<ValueType> discarded_elements;
-            splitters[j].clear();
-            collapsible = buffers[j].Collapse(discarded_elements, splitters[j]);
+            samples[j].clear();
+            collapsible = buffers[j].Collapse([](ValueType element) {});
+            buffers[j].GetHighestWeightedSamples(samples[j]);
         } while (collapsible);
     }
 
-    // merge parallel splitters
-    Buffers<ValueType> result_buffers(p, k);
+    // merge parallel samples
+    OnlineSampler<ValueType> result_buffers(p, k);
     for (int j = 0; j < p; j++) {
         for (int i = 0; i < k; i++) {
-            result_buffers.Put(splitters[j][i]);
+            result_buffers.Put(samples[j][i]);
         }
     }
-    std::vector<ValueType> discarded_elements;
-    std::vector<ValueType> result_splitters;
-    result_buffers.Collapse(discarded_elements, result_splitters);
+    std::vector<ValueType> result_samples;
+    result_buffers.Collapse([](ValueType element) {});
+    result_buffers.GetHighestWeightedSamples(result_samples);
 
     // calculate error
     std::sort(sequence.begin(), sequence.end());
@@ -227,7 +213,7 @@ int main() {
     for (int j = 0; j < k; j++) {
         int target_rank = (N / k) * (j + 1);
         int actual_rank = 0;
-        while (sequence[actual_rank] < result_splitters[j]) {
+        while (sequence[actual_rank] < result_samples[j]) {
             actual_rank++;
         }
         error += pow(target_rank - actual_rank, 2);
