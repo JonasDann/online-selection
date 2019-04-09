@@ -63,7 +63,7 @@ public:
         return GetCurrentBuffer()->Put(value) || empty_buffers > 0;
     }
 
-    bool Collapse(std::vector<ValueType>& out_elements, std::vector<ValueType>& splitters) {
+    bool Collapse(std::vector<ValueType>& out_elements) {
         auto level = leveled_buffers[minimum_level];
         size_t weight_sum = 0;
         for (int i = 0; i < level.size(); i++) {
@@ -101,10 +101,8 @@ public:
                 positions[minimum_index]++;
                 out_elements.emplace_back(minimum);
             }
-            auto splitter = out_elements.back(); // TODO return highest weighted buffer
-            splitters.emplace_back(splitter);
             out_elements.pop_back();
-            target_buffer->Put(splitter);
+            target_buffer->Put(out_elements.back());
         }
 
         for (int i = 0; i < level.size(); i++) {
@@ -122,6 +120,17 @@ public:
         leveled_buffers[minimum_level].emplace_back(target_buffer);
 
         return b_ - empty_buffers > 1;
+    }
+
+    size_t GetSamples(std::vector<ValueType>& out_samples) {
+        Buffer<ValueType> *max_weighted_buffer = &buffer_pool[0];
+        for (int i = 1; i < buffer_pool.size(); i++) {
+            if (buffer_pool[i].weight > max_weighted_buffer->weight) {
+                max_weighted_buffer = &buffer_pool[i];
+            }
+        }
+        out_samples = max_weighted_buffer->elements;
+        return max_weighted_buffer->weight;
     }
 
 private:
@@ -181,7 +190,8 @@ int main() {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> uni;
-    std::lognormal_distribution<double> log_norm(0.0, 1.0);
+    std::lognormal_distribution<double> log_norm(0.0, 1.0); // TODO higher peak
+    // TODO try sorted
 
     std::vector<ValueType> sequence;
 
@@ -193,33 +203,33 @@ int main() {
             sequence.emplace_back(element);
             if (!has_capacity) {
                 std::vector<ValueType> discarded_elements;
-                std::vector<ValueType> splitters;
-                buffers[j].Collapse(discarded_elements, splitters); // TODO test convergence
+                buffers[j].Collapse(discarded_elements); // TODO test convergence
             }
         }
     }
 
     // collapse until splitters
     bool collapsible;
-    std::vector<std::vector<ValueType>> splitters(p, std::vector<ValueType>());
     for (int j = 0; j < p; j++) {
         do {
             std::vector<ValueType> discarded_elements;
-            splitters[j].clear();
-            collapsible = buffers[j].Collapse(discarded_elements, splitters[j]);
+            collapsible = buffers[j].Collapse(discarded_elements);
         } while (collapsible);
     }
 
     // merge parallel splitters
     Buffers<ValueType> result_buffers(p, k);
     for (int j = 0; j < p; j++) {
+        std::vector<ValueType> samples;
+        buffers[j].GetSamples(samples);
         for (int i = 0; i < k; i++) {
-            result_buffers.Put(splitters[j][i]);
+            result_buffers.Put(samples[i]);
         }
     }
     std::vector<ValueType> discarded_elements;
-    std::vector<ValueType> result_splitters;
-    result_buffers.Collapse(discarded_elements, result_splitters);
+    std::vector<ValueType> result_samples;
+    result_buffers.Collapse(discarded_elements);
+    result_buffers.GetSamples(result_samples);
 
     // calculate error
     std::sort(sequence.begin(), sequence.end());
@@ -227,7 +237,7 @@ int main() {
     for (int j = 0; j < k; j++) {
         int target_rank = (N / k) * (j + 1);
         int actual_rank = 0;
-        while (sequence[actual_rank] < result_splitters[j]) {
+        while (sequence[actual_rank] < result_samples[j]) {
             actual_rank++;
         }
         error += pow(target_rank - actual_rank, 2);
