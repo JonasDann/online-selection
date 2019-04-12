@@ -56,7 +56,6 @@ public:
         return buffers_[current_buffer_].Put(value) || empty_buffers_ > 0;
     }
 
-    // TODO emitter lambda instead of out_elements
     template <typename Emitter>
     bool Collapse(const Emitter& emit) {
         std::vector<Buffer> level;
