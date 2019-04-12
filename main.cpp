@@ -46,6 +46,7 @@ public:
     OnlineSampler(size_t b, size_t k) : b_(b), k_(k), current_buffer_(-1), empty_buffers_(b),
             minimum_level_(0) {
         buffers_ = std::vector<Buffer>(b, Buffer(k));
+        level_counters_.emplace_back(0);
     }
 
     bool Put(ValueType value) {
@@ -115,6 +116,8 @@ public:
         minimum_level_++;
         if (minimum_level_ >= level_counters_.size()) {
             level_counters_.emplace_back(1);
+        } else {
+            level_counters_[minimum_level_]++;
         }
         assert(minimum_level_ < level_counters_.size());
 
@@ -145,6 +148,7 @@ private:
         }
         level_counters_[minimum_level_]++;
         buffers_[current_buffer_].weight_ = 1;
+        buffers_[current_buffer_].sorted_ = false;
         empty_buffers_--;
     }
 
@@ -263,7 +267,7 @@ int main() {
     std::uniform_int_distribution<int> uni;
     std::lognormal_distribution<double> log_norm(0.0, 0.1);
 
-    online_sampling<double, std::lognormal_distribution<double>>(1, 10, 60, 7, log_norm, true);
+    online_sampling<int, std::uniform_int_distribution<int>>(1, 10, 60, 7, uni, true);
 
     return 0;
 }
