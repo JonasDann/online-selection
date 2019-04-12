@@ -59,8 +59,8 @@ public:
     template <typename Emitter>
     bool Collapse(const Emitter& emit) {
         std::vector<Buffer> level;
-        auto level_begin = b_ - level_counters_[minimum_level_];
-        for (size_t i = level_begin; i < b_; i++) {
+        auto level_begin = b_ - empty_buffers_ - level_counters_[minimum_level_];
+        for (size_t i = level_begin; i < b_ - empty_buffers_; i++) {
             level.emplace_back(std::move(buffers_[i]));
         }
         size_t weight_sum = 0;
@@ -164,7 +164,6 @@ template <typename ValueType>
 double calculate_error(std::vector<ValueType> sequence, std::vector<ValueType>& samples) {
     size_t N = sequence.size();
     size_t k = samples.size();
-    std::sort(sequence.begin(), sequence.end());
 
     float error = 0;
     for (int j = 0; j < k; j++) {
@@ -211,8 +210,10 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
             sequence.emplace_back(distribution(rng));
         }
 
+        std::vector<ValueType> sorted_sequence = sequence;
+        std::sort(sorted_sequence.begin(), sorted_sequence.end());
         if (sorted) {
-            std::sort(sequence.begin(), sequence.end());
+            sequence = sorted_sequence;
         }
 
         // stream data into buffers
@@ -224,7 +225,7 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
                 if (j == 0) {
                     std::vector<ValueType> samples;
                     auto sample_weight = buffers[j].GetSamples(samples);
-                    print_convergence<ValueType>(i, sequence, last_sample_weight, sample_weight, samples);
+                    print_convergence<ValueType>(i, sorted_sequence, last_sample_weight, sample_weight, samples);
                 }
             }
         }
@@ -236,7 +237,7 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
             if (j == 0) {
                 std::vector<ValueType> samples;
                 auto sample_weight = buffers[j].GetSamples(samples);
-                print_convergence<ValueType>(N_p, sequence, last_sample_weight, sample_weight, samples);
+                print_convergence<ValueType>(N_p, sorted_sequence, last_sample_weight, sample_weight, samples);
             }
         } while (collapsible);
         global_sequence.insert(global_sequence.end(), sequence.begin(), sequence.end());
@@ -258,6 +259,7 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
     }
     global_buffers.GetSamples(global_samples);
 
+    std::sort(global_sequence.begin(), global_sequence.end());
     auto error = calculate_error<ValueType>(global_sequence, global_samples);
     std::cout << "final error: " << error << "\n\n";
 }
