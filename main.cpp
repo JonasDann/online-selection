@@ -12,6 +12,8 @@
 #include <assert.h>
 #include <cmath>
 
+constexpr bool debug = false;
+
 template <
         typename ValueType>
 class OnlineSampler {
@@ -191,10 +193,12 @@ template <typename ValueType, typename Distribution>
 void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
                      Distribution distribution, bool sorted) {
     auto N_p = ((int) (pow(10, N_pow) / (p * b * k)) + 1) * b * k;
-    auto N = N_p * p;
 
-    std::cout << "# Online Sampling" << "\n";
-    std::cout << "p: " << p << ", b: " << b << ", k: " << k << ", N: " << N << ", sorted: " << sorted << "\n\n";
+    if (debug) {
+        auto N = N_p * p;
+        std::cout << "# Online Sampling" << "\n";
+        std::cout << "p: " << p << ", b: " << b << ", k: " << k << ", N: " << N << ", sorted: " << sorted << "\n\n";
+    }
 
     std::vector<OnlineSampler<ValueType>> buffers(p, OnlineSampler<ValueType>(b, k));
     std::random_device rd;
@@ -210,10 +214,14 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
             sequence.emplace_back(distribution(rng));
         }
 
-        std::vector<ValueType> sorted_sequence = sequence;
-        std::sort(sorted_sequence.begin(), sorted_sequence.end());
+        std::vector<ValueType> sorted_sequence;
+        if (debug) {
+            sorted_sequence = sequence;
+            std::sort(sorted_sequence.begin(), sorted_sequence.end());
+        }
+
         if (sorted) {
-            sequence = sorted_sequence;
+            std::sort(sequence.begin(), sequence.end());
         }
 
         // stream data into buffers
@@ -222,7 +230,7 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
             auto has_capacity = buffers[j].Put(sequence[i]);
             if (!has_capacity) {
                 buffers[j].Collapse([](ValueType element) {});
-                if (j == 0) {
+                if (j == 0 && debug) {
                     std::vector<ValueType> samples;
                     auto sample_weight = buffers[j].GetSamples(samples);
                     print_convergence<ValueType>(i, sorted_sequence, last_sample_weight, sample_weight, samples);
@@ -234,7 +242,7 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
         bool collapsible;
         do {
             collapsible = buffers[j].Collapse([](ValueType element) {});
-            if (j == 0) {
+            if (j == 0 && debug) {
                 std::vector<ValueType> samples;
                 auto sample_weight = buffers[j].GetSamples(samples);
                 print_convergence<ValueType>(N_p, sorted_sequence, last_sample_weight, sample_weight, samples);
@@ -259,9 +267,11 @@ void online_sampling(size_t p, size_t b, size_t k, size_t N_pow,
     }
     global_buffers.GetSamples(global_samples);
 
-    std::sort(global_sequence.begin(), global_sequence.end());
-    auto error = calculate_error<ValueType>(global_sequence, global_samples);
-    std::cout << "final error: " << error << "\n\n";
+    if (debug) {
+        std::sort(global_sequence.begin(), global_sequence.end());
+        auto error = calculate_error<ValueType>(global_sequence, global_samples);
+        std::cout << "final error: " << error << "\n\n";
+    }
 }
 
 int main() {
