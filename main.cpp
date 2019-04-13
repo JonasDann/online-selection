@@ -192,9 +192,9 @@ double calculate_error(std::vector<ValueType> sequence, std::vector<ValueType>& 
         while (sequence[actual_rank] < samples[j]) {
             actual_rank++;
         }
-        error += pow(target_rank - actual_rank, 2);
+        error += abs(target_rank - actual_rank);
     }
-    return std::sqrt(error / (k - 1)) / N;
+    return error / k / N;
 }
 
 template <typename ValueType>
